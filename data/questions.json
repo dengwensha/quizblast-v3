@@ -1,0 +1,17 @@
+[
+  {
+    "question": "Türkiye'nin başkenti neresidir?",
+    "options": ["İstanbul", "Ankara", "İzmir", "Bursa"],
+    "correct": 1
+  },
+  {
+    "question": "2 + 2 kaçtır?",
+    "options": ["3", "4", "5", "6"],
+    "correct": 1
+  },
+  {
+    "question": "Suyun kimyasal formülü nedir?",
+    "options": ["CO2", "H2O", "O2", "NaCl"],
+    "correct": 1
+  }
+]
