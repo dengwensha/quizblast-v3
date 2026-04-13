@@ -4,23 +4,13 @@ import os
 import json
 import asyncio
 
+from app.db import Base, engine, SessionLocal
+from app.models import Question
+
 app = FastAPI()
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-QUESTIONS_PATH = os.path.join(BASE_DIR, "data", "questions.json")
-
-
-def load_questions():
-    with open(QUESTIONS_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_questions(data):
-    with open(QUESTIONS_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-questions = load_questions()
+Base.metadata.create_all(bind=engine)
 
 ROOM_CODE = "1234"
 QUESTION_DURATION = 15
@@ -36,27 +26,40 @@ question_open = False
 auto_task = None
 
 
+def db_get_questions():
+    db = SessionLocal()
+    try:
+        rows = db.query(Question).order_by(Question.id.asc()).all()
+        return rows
+    finally:
+        db.close()
+
+
 def get_current_question():
-    global questions
-    if not questions:
+    rows = db_get_questions()
+    if not rows:
         return {
             "question_index": 0,
             "question": "Henüz soru yok",
             "options": ["-", "-", "-", "-"]
         }
 
-    q = questions[current_question_index]
+    q = rows[current_question_index]
     return {
         "question_index": current_question_index + 1,
-        "question": q["question"],
-        "options": q["options"]
+        "question": q.question,
+        "options": [q.option_a, q.option_b, q.option_c, q.option_d]
     }
 
 
 def get_correct_letter():
-    global questions
-    idx = questions[current_question_index]["correct"]
-    return ["A", "B", "C", "D"][idx]
+    rows = db_get_questions()
+    q = rows[current_question_index]
+    return ["A", "B", "C", "D"][q.correct]
+
+
+def get_question_count():
+    return len(db_get_questions())
 
 
 async def broadcast(payload: dict):
@@ -151,14 +154,22 @@ def root_head():
 
 @app.get("/api/questions")
 def api_list_questions():
-    global questions
-    questions = load_questions()
-    return {"items": questions}
+    rows = db_get_questions()
+    return {
+        "items": [
+            {
+                "id": q.id,
+                "question": q.question,
+                "options": [q.option_a, q.option_b, q.option_c, q.option_d],
+                "correct": q.correct
+            }
+            for q in rows
+        ]
+    }
 
 
 @app.post("/api/questions")
 async def api_add_question(request: Request):
-    global questions
     body = await request.json()
 
     question = str(body.get("question", "")).strip()
@@ -178,42 +189,53 @@ async def api_add_question(request: Request):
     if correct not in [0, 1, 2, 3]:
         return JSONResponse({"ok": False, "message": "Doğru cevap 0-3 arası olmalı"}, status_code=400)
 
-    questions = load_questions()
-    questions.append({
-        "question": question,
-        "options": options,
-        "correct": correct
-    })
-    save_questions(questions)
+    db = SessionLocal()
+    try:
+        row = Question(
+            question=question,
+            option_a=options[0],
+            option_b=options[1],
+            option_c=options[2],
+            option_d=options[3],
+            correct=correct
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return {"ok": True, "id": row.id}
+    finally:
+        db.close()
 
-    return {"ok": True, "count": len(questions)}
 
+@app.delete("/api/questions/{question_id}")
+def api_delete_question(question_id: int):
+    global current_question_index
 
-@app.delete("/api/questions/{question_index}")
-def api_delete_question(question_index: int):
-    global questions, current_question_index
+    db = SessionLocal()
+    try:
+        row = db.query(Question).filter(Question.id == question_id).first()
+        if not row:
+            return JSONResponse({"ok": False, "message": "Soru bulunamadı"}, status_code=404)
 
-    questions = load_questions()
+        db.delete(row)
+        db.commit()
 
-    if question_index < 0 or question_index >= len(questions):
-        return JSONResponse({"ok": False, "message": "Soru bulunamadı"}, status_code=404)
+        total = get_question_count()
+        if total == 0:
+            current_question_index = 0
+        else:
+            current_question_index = min(current_question_index, total - 1)
 
-    questions.pop(question_index)
-    save_questions(questions)
-
-    if questions:
-        current_question_index = min(current_question_index, len(questions) - 1)
-    else:
-        current_question_index = 0
-
-    return {"ok": True, "count": len(questions)}
+        return {"ok": True}
+    finally:
+        db.close()
 
 
 # ---------------- WEBSOCKET ----------------
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global quiz_started, question_open, current_question_index, auto_task, questions
+    global quiz_started, question_open, current_question_index, auto_task
 
     await websocket.accept()
     clients.append(websocket)
@@ -231,7 +253,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "players": players
         }))
 
-        if quiz_started and questions:
+        if quiz_started and get_question_count() > 0:
             await websocket.send_text(json.dumps({
                 "type": "question",
                 "data": get_current_question(),
@@ -272,7 +294,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 await broadcast_leaderboard()
 
-                if quiz_started and questions:
+                if quiz_started and get_question_count() > 0:
                     await websocket.send_text(json.dumps({
                         "type": "question",
                         "data": get_current_question(),
@@ -280,9 +302,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     }))
 
             elif msg_type == "start_quiz":
-                questions = load_questions()
-
-                if not questions:
+                if get_question_count() == 0:
                     await websocket.send_text(json.dumps({
                         "type": "info",
                         "message": "Soru yok. Önce admin panelden soru ekleyin."
@@ -301,12 +321,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 auto_task = asyncio.create_task(auto_close_question())
 
             elif msg_type == "next_question":
-                questions = load_questions()
-
-                if not questions:
+                total = get_question_count()
+                if total == 0:
                     continue
 
-                if current_question_index < len(questions) - 1:
+                if current_question_index < total - 1:
                     current_question_index += 1
                     question_open = True
                     reset_answer_state()
@@ -338,11 +357,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 await broadcast_leaderboard()
 
             elif msg_type == "show_answer":
-                if question_open and questions:
+                if question_open and get_question_count() > 0:
                     await close_question()
 
             elif msg_type == "answer":
-                if not question_open or not questions:
+                if not question_open or get_question_count() == 0:
                     await websocket.send_text(json.dumps({
                         "type": "info",
                         "message": "Bu soru kapandı."

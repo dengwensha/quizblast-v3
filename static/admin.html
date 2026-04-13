@@ -106,19 +106,46 @@
     }
 
     async function deleteQuestion(index) {
-      const ok = confirm("Bu soruyu silmek istiyor musun?");
-      if (!ok) return;
+      c<script>
+  async function loadQuestions() {
+    const res = await fetch("/api/questions");
+    const data = await res.json();
 
-      const res = await fetch(`/api/questions/${index}`, {
-        method: "DELETE"
-      });
+    const wrap = document.getElementById("questionList");
+    wrap.innerHTML = "";
 
-      const data = await res.json();
-      document.getElementById("message").innerText = data.ok ? "Soru silindi." : data.message || "Hata oluştu.";
-      loadQuestions();
-    }
+    data.items.forEach((item, index) => {
+      const div = document.createElement("div");
+      div.className = "border rounded-2xl p-4 bg-slate-50";
 
+      div.innerHTML = `
+        <div class="font-bold mb-2">${index + 1}. ${item.question}</div>
+        <div class="text-sm text-slate-600 mb-2">A) ${item.options[0]}</div>
+        <div class="text-sm text-slate-600 mb-2">B) ${item.options[1]}</div>
+        <div class="text-sm text-slate-600 mb-2">C) ${item.options[2]}</div>
+        <div class="text-sm text-slate-600 mb-2">D) ${item.options[3]}</div>
+        <div class="text-sm font-medium mb-3">Doğru: ${["A","B","C","D"][item.correct]}</div>
+        <button onclick="deleteQuestion(${item.id})" class="px-4 py-2 rounded-xl bg-rose-600 text-white hover:bg-rose-500">
+          Sil
+        </button>
+      `;
+
+      wrap.appendChild(div);
+    });
+  }
+
+  async function deleteQuestion(id) {
+    const ok = confirm("Bu soruyu silmek istiyor musun?");
+    if (!ok) return;
+
+    const res = await fetch(`/api/questions/${id}`, {
+      method: "DELETE"
+    });
+
+    const data = await res.json();
+    document.getElementById("message").innerText = data.ok ? "Soru silindi." : data.message || "Hata oluştu.";
     loadQuestions();
-  </script>
+  }
+</script>
 </body>
 </html>
